@@ -350,6 +350,22 @@
       return result.trim();
     }
 
+    function normalizeText(text) {
+      // Normalize Unicode combining characters using NFC
+      text = text.normalize('NFC');
+      // Map common misdecoded characters from PDF fonts
+      const charMap = {
+        'ţ': 't', 'ã': 'a', 'š': 's', 'ž': 'z', 'č': 'c',
+        'î': 'i', 'ø': 'o', 'ñ': 'n', 'ü': 'u', 'ö': 'o',
+        'ç': 'c', 'ù': 'u', 'è': 'e', 'é': 'e', 'ê': 'e',
+        'á': 'a', 'í': 'i', 'ó': 'o', 'ú': 'u', 'â': 'a',
+      };
+      for (const [old, replacement] of Object.entries(charMap)) {
+        text = text.split(old).join(replacement);
+      }
+      return text;
+    }
+
     async function convertPdfBuffer(buffer, sourceFilename) {
       const pdfjsLib = await loadPdfjsLib();
       console.log('After loadPdfjsLib, pdfjsLib:', {
