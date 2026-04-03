@@ -273,18 +273,185 @@
       const items = textContent.items;
       if (items.length === 0) return '';
 
-      // Sort items by vertical position (y-coordinate, descending since PDF coords start from bottom)
-      const sortedItems = items.sort((a, b) => {
-        const yA = a.transform[5] || 0;
-        const yB = b.transform[5] || 0;
-        return yB - yA;
-      });
+      // First, detect columns by analyzing x-coordinates
+      const xPositions = items.map(item => item.transform[4] || 0).sort((a, b) => a - b);
 
+      // Use statistical clustering to identify column boundaries
+      const columns = detectColumns(items);
+
+      // Process each column from left to right
+      let result = '';
+      for (let colIndex = 0; colIndex < columns.length; colIndex++) {
+        const columnItems = columns[colIndex];
+
+        // Sort items within column by vertical position (top to bottom)
+        columnItems.sort((a, b) => {
+          const yA = b.transform[5] || 0; // Higher y = lower on page
+          const yB = a.transform[5] || 0;
+          return yA - yB; // Sort descending (top to bottom)
+        });
+
+        // Group items within column by line
+        const lines = groupItemsByLine(columnItems);
+
+        // Process lines within this column
+        let columnText = '';
+        let previousY = null;
+        const paragraphGap = 15; // pixels threshold for paragraph break
+
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const lineY = line[0].transform[5] || 0;
+
+          // Sort items within line by x-coordinate (left to right)
+          line.sort((a, b) => (a.transform[4] || 0) - (b.transform[4] || 0));
+
+          // Join text within the line
+          const lineText = line.map(item => item.str).join('').trim();
+
+          if (!lineText) continue;
+
+          // Check if this is a new paragraph (significant vertical gap)
+          const isNewParagraph = previousY !== null && (previousY - lineY) > paragraphGap;
+
+          if (isNewParagraph && columnText) {
+            // Add full stop before new paragraph if previous text doesn't end with punctuation
+            const lastChar = columnText.trim().slice(-1);
+            if (!['.', '!', '?', ':'].includes(lastChar)) {
+              columnText = columnText.trim() + '. ';
+            }
+          }
+
+          // Add the line text
+          if (columnText && !isNewParagraph) {
+            columnText += ' '; // Space between lines on same paragraph
+          }
+          columnText += lineText;
+
+          previousY = lineY;
+        }
+
+        // Add column separator if not the first column
+        if (colIndex > 0 && result) {
+          result += '\n\n'; // Double newline between columns
+        }
+        result += columnText.trim();
+      }
+
+      return result.trim();
+    }
+
+    function detectColumns(items) {
+      if (items.length === 0) return [];
+
+      // Get all x-positions
+      const xPositions = items.map(item => item.transform[4] || 0).sort((a, b) => a - b);
+
+      // Remove duplicates and find significant gaps
+      const uniqueX = [...new Set(xPositions)];
+      const gaps = [];
+      for (let i = 1; i < uniqueX.length; i++) {
+        gaps.push(uniqueX[i] - uniqueX[i - 1]);
+      }
+
+      // Sort gaps to find the largest ones (likely column separators)
+      const sortedGaps = [...gaps].sort((a, b) => b - a);
+
+      // Use the largest gap as column separator threshold
+      // If there are multiple large gaps, it suggests multiple columns
+      const columnThreshold = sortedGaps.length > 0 ? sortedGaps[0] * 0.7 : 100;
+
+      // Group items by column
+      const columns = [];
+      let currentColumn = [];
+      let currentX = null;
+
+      // Sort items by x-coordinate for column assignment
+      const sortedByX = [...items].sort((a, b) => (a.transform[4] || 0) - (b.transform[4] || 0));
+
+      for (const item of sortedByX) {
+        const x = item.transform[4] || 0;
+
+        if (currentX === null || (x - currentX) > columnThreshold) {
+          // New column
+          if (currentColumn.length > 0) {
+            columns.push(currentColumn);
+          }
+          currentColumn = [item];
+          currentX = x;
+        } else {
+          // Same column
+          currentColumn.push(item);
+        }
+      }
+
+      // Add the last column
+      if (currentColumn.length > 0) {
+        columns.push(currentColumn);
+      }
+
+      // If only one column detected but we have many items, try a more sophisticated approach
+      if (columns.length === 1 && items.length > 20) {
+        return detectColumnsAdvanced(items);
+      }
+
+      return columns;
+    }
+
+    function detectColumnsAdvanced(items) {
+      // More sophisticated column detection using clustering
+      const xPositions = items.map(item => item.transform[4] || 0);
+
+      // Simple k-means like clustering for 2-3 columns
+      const clusters = clusterXPositions(xPositions, 3);
+
+      // Group items by cluster
+      const columns = clusters.map(cluster => {
+        const minX = Math.min(...cluster);
+        const maxX = Math.max(...cluster);
+        return items.filter(item => {
+          const x = item.transform[4] || 0;
+          return x >= minX - 10 && x <= maxX + 10; // Small tolerance
+        });
+      }).filter(column => column.length > 0);
+
+      return columns.length > 0 ? columns : [items]; // Fallback to single column
+    }
+
+    function clusterXPositions(positions, maxClusters) {
+      if (positions.length < 10) return [positions];
+
+      // Simple clustering: sort and find natural breaks
+      const sorted = [...positions].sort((a, b) => a - b);
+      const clusters = [];
+      let currentCluster = [sorted[0]];
+
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i] - sorted[i - 1] > 50) { // Gap threshold
+          clusters.push(currentCluster);
+          currentCluster = [sorted[i]];
+        } else {
+          currentCluster.push(sorted[i]);
+        }
+      }
+      clusters.push(currentCluster);
+
+      return clusters.slice(0, maxClusters); // Limit to maxClusters
+    }
+
+    function groupItemsByLine(items) {
       // Group items by line (similar y-coordinates)
       const lines = [];
       let currentLine = [];
       let currentY = null;
       const lineTolerance = 5; // pixels tolerance for same line
+
+      // Sort by y-coordinate first
+      const sortedItems = items.sort((a, b) => {
+        const yA = b.transform[5] || 0; // Higher y = lower on page
+        const yB = a.transform[5] || 0;
+        return yA - yB; // Sort descending (top to bottom)
+      });
 
       for (const item of sortedItems) {
         const y = item.transform[5] || 0;
@@ -310,44 +477,7 @@
         lines.push(currentLine);
       }
 
-      // Process lines into text with proper punctuation
-      let result = '';
-      let previousY = null;
-      const paragraphGap = 15; // pixels threshold for paragraph break
-
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const lineY = line[0].transform[5] || 0;
-
-        // Sort items within line by x-coordinate (left to right)
-        line.sort((a, b) => (a.transform[4] || 0) - (b.transform[4] || 0));
-
-        // Join text within the line
-        const lineText = line.map(item => item.str).join('').trim();
-
-        if (!lineText) continue;
-
-        // Check if this is a new paragraph (significant vertical gap)
-        const isNewParagraph = previousY !== null && (previousY - lineY) > paragraphGap;
-
-        if (isNewParagraph && result) {
-          // Add full stop before new paragraph if previous text doesn't end with punctuation
-          const lastChar = result.trim().slice(-1);
-          if (!['.', '!', '?', ':'].includes(lastChar)) {
-            result = result.trim() + '. ';
-          }
-        }
-
-        // Add the line text
-        if (result && !isNewParagraph) {
-          result += ' '; // Space between lines on same paragraph
-        }
-        result += lineText;
-
-        previousY = lineY;
-      }
-
-      return result.trim();
+      return lines;
     }
 
     function normalizeText(text) {
