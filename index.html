@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF Body Text Reader</title>
+  <style>
+    body {font-family: Arial, sans-serif; margin: 20px; color: #333; background: #f8f9fb;}
+    body.fullscreen {margin: 0; padding: 0; background: #000;}
+    body.fullscreen #mainContainer {position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #000; margin: 0; padding: 0; z-index: 1000;}
+    body.fullscreen #paragraph-label, body.fullscreen .controls, body.fullscreen .control-group {display: none;}
+    body.fullscreen #reader {border: none; background: #000; color: #fff; padding: 40px; border-radius: 0; min-height: 100vh; line-height: 2; font-size: 28px; text-align: center; margin: 0;}
+    body.fullscreen #reader span.word {white-space: pre-wrap;}
+    body.fullscreen #reader span.active {background: #ffff00; color: #000; padding: 2px 4px;}
+    body.fullscreen #fullscreenToggle {position: fixed; top: 10px; right: 10px; background: #333; color: #fff; border: 1px solid #666; z-index: 2000; opacity: 0; transition: opacity 0.3s;}
+    body.fullscreen #fullscreenToggle {opacity: 1;}
+    body.fullscreen #mainContainer:hover #fullscreenToggle {opacity: 1;}
+    
+    #mainContainer {position: relative;}
+    #reader {border: 1px solid #bbb; background: #fff; padding: 16px; border-radius: 8px; min-height: 200px; line-height: 1.6;}
+    #reader span.word {white-space: pre-wrap;}
+    #reader span.active {background: #ffef80; color: #000;}
+    .controls {margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;}
+    button {padding: 8px 12px; font-size: 16px; border-radius: 4px; border: 1px solid #888; background: #fff; cursor: pointer;}
+    button:hover {background: #f0f0f0;}
+    button:disabled {opacity: 0.5; cursor: not-allowed;}
+    .control-group {display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; align-items: center;}
+    .control-group label {font-size: 14px; color: #444;}
+    #progress {margin-top: 8px;}
+    #paragraph-label {margin-bottom: 8px; font-weight:bold;}
+    .status {margin-top: 8px; font-size: 14px; color:#555;}
+  </style>
+</head>
+<body>
+  <div id="mainContainer">
+    <h1>Sentence Reader</h1>
+    <p>Loads text from server or local TXT/PDF, shows one sentence at a time, reads aloud, and highlights words in real time.</p>
+    <div id="paragraph-label">Loading...</div>
+    <div id="reader"></div>
+
+    <div class="controls">
+      <button id="prevBtn" disabled>&larr; Previous</button>
+      <button id="playPauseBtn" disabled>Play</button>
+      <button id="nextBtn" disabled>Next &rarr;</button>
+      <button id="restartBtn" disabled>Restart</button>
+      <button id="fullscreenToggle" disabled>Fullscreen</button>
+    </div>
+
+    <div class="control-group">
+      <label>Voice: <select id="voiceSelect"></select></label>
+      <label>Rate: <input id="rateInput" type="range" min="0.5" max="2" step="0.1" value="1"></label>
+      <span id="rateValue">1.0</span>
+      <label>Pitch: <input id="pitchInput" type="range" min="0.5" max="2" step="0.1" value="1"></label>
+      <span id="pitchValue">1.0</span>
+    </div>
+
+    <div id="progress"></div>
+    <div class="control-group">
+      <label>PDF convert progress: <progress id="pdfProgress" value="0" max="100" style="width: 100%; display: none;"></progress></label>
+    </div>
+    <div class="control-group">
+      <button id="saveTextBtn" disabled>Save extracted text</button>
+    </div>
+    <div class="control-group">
+      <label>Load text file locally: <input type="file" id="fileInput" accept=".txt" /></label>
+    </div>
+    <div class="control-group">
+      <label>Load PDF file locally: <input type="file" id="pdfInput" accept=".pdf" /></label>
+      <button id="convertPdfBtn" disabled>Convert PDF to text</button>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.12.313/pdf.min.js"></script>
+  <script>
+    async function loadPdfjsLib() {
+      // Prefer existing global object from script tag.
+      let pdfjs = window.pdfjsLib || window['pdfjs-dist/build/pdf'] || window['pdfjs-dist/build/pdf.min'] || null;
+      if (pdfjs && typeof pdfjs.getDocument === 'function') {
+        window.pdfjsLib = pdfjs;
+        return pdfjs;
+      }
+
+      // If script tag hasn't loaded yet, wait for onload event or retry.
+      if (!window.__pdfjsLoadPromise) {
+        window.__pdfjsLoadPromise = new Promise((resolve) => {
+          if (window.pdfjsLib && typeof window.pdfjsLib.getDocument === 'function') {
+            resolve(window.pdfjsLib);
+            return;
+          }
+          const script = document.querySelector('script[src*="pdf.min.js"]');
+          if (script && !script.hasAttribute('data-listener')) {
+            script.setAttribute('data-listener', 'true');
+            script.addEventListener('load', () => {
+              if (window.pdfjsLib && typeof window.pdfjsLib.getDocument === 'function') {
+                resolve(window.pdfjsLib);
+              } else {
+                resolve(null);
+              }
+            });
+            script.addEventListener('error', () => resolve(null));
+          } else {
+            resolve(null);
+          }
+        });
+      }
+
+      pdfjs = await window.__pdfjsLoadPromise;
+      if (pdfjs && typeof pdfjs.getDocument === 'function') {
+        window.pdfjsLib = pdfjs;
+        return pdfjs;
+      }
+
+      // Fallback dynamic import from jsDelivr if global object is not present.
+      try {
+        const mod = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@3.12.313/build/pdf.min.js');
+        const maybe = mod.default || mod;
+        if (maybe && typeof maybe.getDocument === 'function') {
+          window.pdfjsLib = maybe;
+          return maybe;
+        }
+      } catch (e) {
+        console.warn('dynamic pdfjs import failed', e);
+      }
+
+      return null;
+    }
+
+    const textPath = './20260412_ASDDR_mediumfont_bodytext2.txt';
+    const fileInput = document.getElementById('fileInput');
+    const pdfInput = document.getElementById('pdfInput');
+    const convertPdfBtn = document.getElementById('convertPdfBtn');
+    const readerEl = document.getElementById('reader');
+    const paragraphLabel = document.getElementById('paragraph-label');
+    const prevBtn = document.getElementById('prevBtn');
+    const playPauseBtn = document.getElementById('playPauseBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const statusEl = document.getElementById('status');
+    const progressEl = document.getElementById('progress');
+    const fullscreenToggle = document.getElementById('fullscreenToggle');
+    const mainContainer = document.getElementById('mainContainer');
+    const voiceSelect = document.getElementById('voiceSelect');
+    const rateInput = document.getElementById('rateInput');
+    const pitchInput = document.getElementById('pitchInput');
+    const rateValue = document.getElementById('rateValue');
+    const pitchValue = document.getElementById('pitchValue');
+    const pdfProgress = document.getElementById('pdfProgress');
+    const saveTextBtn = document.getElementById('saveTextBtn');
+
+    let sentences = [];
+    let currentIndex = 0;
+    let utterance = null;
+    let isPlaying = false;
+    let extractedText = '';
+    let extractedFilename = '';
+    let wordSpans = [];
+    let offsets = [];
+    let voices = [];
+    let nextSentenceTimeout = null;
+
+    function parseText(raw) {
+      const paragraphs = raw.split(/\r?\n\s*\r?\n/).map(p => p.replace(/\s+/g,' ').trim()).filter(Boolean);
+      sentences = [];
+      paragraphs.forEach(p => {
+        const chunks = p.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) || [p];
+        chunks.forEach(chunk => {
+          const sent = chunk.trim();
+          if (sent) sentences.push(sent);
+        });
+      });
+      if (sentences.length === 0) {
+        throw new Error('No sentences found.');
+      }
+      currentIndex = 0;
+      setControlsState(true);
+      setupVoices();
+      renderSentence();
+    }
+
+    async function loadFile() {
+      paragraphLabel.textContent = 'Loading sentence text...';
+      if (location.protocol === 'file:') {
+        paragraphLabel.textContent = 'Running in local file mode';
+        statusEl.textContent = 'Fetch disabled in file:// mode; select .txt or .pdf file';
+        setControlsState(false);
+        fileInput.disabled = false;
+        pdfInput.disabled = false;
+        convertPdfBtn.disabled = true;
+        return;
+      }
+
+      statusEl.textContent = 'Trying to load text from server...';
+      try {
+        const res = await fetch(textPath);
+        if (!res.ok) throw new Error('Failed to load file: ' + res.statusText);
+        const raw = await res.text();
+        parseText(raw);
+      } catch (err) {
+        paragraphLabel.textContent = 'Load failed, please select local file or PDF';
+        statusEl.textContent = 'Fetch failed: ' + err + ' (select .txt or .pdf file with local file selector)';
+        setControlsState(false);
+        fileInput.disabled = false;
+        pdfInput.disabled = false;
+        convertPdfBtn.disabled = true;
+      }
+    }
+
+    function promiseWithTimeout(promise, ms, errorMessage) {
+      return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error(errorMessage)), ms)),
+      ]);
+    }
+
+    function normalizeText(text) {
+      // Normalize Unicode combining characters using NFC
+      text = text.normalize('NFC');
+      // Map common misdecoded characters from PDF fonts
+      const charMap = {
+        'ţ': 't', 'ã': 'a', 'š': 's', 'ž': 'z', 'č': 'c',
+        'î': 'i', 'ø': 'o', 'ñ': 'n', 'ü': 'u', 'ö': 'o',
+        'ç': 'c', 'ù': 'u', 'è': 'e', 'é': 'e', 'ê': 'e',
+        'á': 'a', 'í': 'i', 'ó': 'o', 'ú': 'u', 'â': 'a',
+      };
+      for (const [old, replacement] of Object.entries(charMap)) {
+        text = text.split(old).join(replacement);
+      }
+      return text;
+    }
+
+    async function convertPdfBuffer(buffer, sourceFilename) {
+      const pdfjsLib = await loadPdfjsLib();
+      if (!pdfjsLib || typeof pdfjsLib.getDocument !== 'function') {
+        throw new Error('pdfjsLib.getDocument is not available; cannot convert PDF.');
+      }
+      let conversionTimer = null;
+      const conversionTimeoutMs = 120000; // 2 minutes overall fallback
+      statusEl.textContent = 'Converting PDF to text...';
+      const loadingTask = pdfjsLib.getDocument({data: buffer});
+
+      conversionTimer = setTimeout(() => {
+        statusEl.textContent = 'Conversion taking too long, aborting.';
+        if (loadingTask && typeof loadingTask.destroy === 'function') {
+          loadingTask.destroy();
+        }
+        throw new Error('Conversion timed out after 2 minutes');
+      }, conversionTimeoutMs);
+
+      const pdf = await promiseWithTimeout(loadingTask.promise, 30000, 'PDF load timed out');
+      pdfProgress.max = pdf.numPages;
+      pdfProgress.value = 0;
+      pdfProgress.style.display = 'block';
+      let fullText = '';
+      for (let i = 1; i <= pdf.numPages; i++) {
+        statusEl.textContent = `Retrieving page ${i} of ${pdf.numPages}...`;
+        const page = await promiseWithTimeout(pdf.getPage(i), 30000, `Page ${i} load timed out`);
+        const content = await promiseWithTimeout(page.getTextContent(), 30000, `Page ${i} text extraction timed out`);
+        let text = content.items.map(item => item.str).join(' ');
+        text = normalizeText(text);
+        fullText += text.trim() + '\n\n';
+        pdfProgress.value = i;
+        statusEl.textContent = `Converting PDF: page ${i} of ${pdf.numPages}`;
+      }
+
+      fullText = normalizeText(fullText);
+      clearTimeout(conversionTimer);
+      parseText(fullText);
+      extractedText = fullText;
+      if (sourceFilename) {
+        extractedFilename = sourceFilename.replace(/\.pdf$/i, '.txt');
+      }
+      pdfProgress.style.display = 'none';
+      statusEl.textContent = `PDF converted: ${pdf.numPages} pages, ${sentences.length} sentences.`;
+      saveTextBtn.disabled = false;
+    }
+
+    function setControlsState(enabled) {
+      prevBtn.disabled = !enabled;
+      playPauseBtn.disabled = !enabled;
+      nextBtn.disabled = !enabled;
+      restartBtn.disabled = !enabled;
+      voiceSelect.disabled = !enabled;
+      rateInput.disabled = !enabled;
+      pitchInput.disabled = !enabled;
+      fullscreenToggle.disabled = !enabled;
+    }
+
+    function updateRatePitchLabels() {
+      rateValue.textContent = parseFloat(rateInput.value).toFixed(1);
+      pitchValue.textContent = parseFloat(pitchInput.value).toFixed(1);
+    }
+
+    function setupVoices() {
+      voices = window.speechSynthesis.getVoices();
+      if (voices.length === 0) {
+        window.speechSynthesis.onvoiceschanged = setupVoices;
+        return;
+      }
+      voiceSelect.innerHTML = '';
+      let ukEnglishIndex = -1;
+      let defaultIndex = -1;
+
+      voices.forEach((voice, index) => {
+        const opt = document.createElement('option');
+        opt.value = index;
+        opt.textContent = `${voice.name} (${voice.lang})${voice.default ? ' [default]' : ''}`;
+        voiceSelect.appendChild(opt);
+
+        // Look for Google UK English or en-GB female voice
+        if (ukEnglishIndex === -1) {
+          const isUkEnglish = voice.lang.startsWith('en-GB') || voice.lang.startsWith('en_GB');
+          const isGoogle = voice.name.toLowerCase().includes('google');
+          const isFemale = voice.name.toLowerCase().includes('female') || !voice.name.toLowerCase().includes('male');
+          if (isUkEnglish && (isGoogle || isFemale)) {
+            ukEnglishIndex = index;
+          }
+        }
+
+        // Fallback: track first UK English voice
+        if (ukEnglishIndex === -1 && voice.lang.startsWith('en-GB')) {
+          ukEnglishIndex = index;
+        }
+
+        // Track system default
+        if (voice.default) {
+          defaultIndex = index;
+        }
+      });
+
+      // Set to UK English if found, otherwise system default
+      const selectedIndex = ukEnglishIndex !== -1 ? ukEnglishIndex : (defaultIndex !== -1 ? defaultIndex : 0);
+      voiceSelect.value = selectedIndex;
+    }
+
+    function renderSentence() {
+      const sentence = sentences[currentIndex] || '';
+      readerEl.innerHTML = '';
+      const words = sentence.split(/(\s+)/);
+      wordSpans = [];
+      offsets = [];
+      let pos = 0;
+
+      words.forEach((token) => {
+        if (/^\s+$/.test(token)) {
+          readerEl.appendChild(document.createTextNode(token));
+          pos += token.length;
+          return;
+        }
+        const span = document.createElement('span');
+        span.className = 'word';
+        span.textContent = token;
+        readerEl.appendChild(span);
+        offsets.push({start: pos, end: pos + token.length, span});
+        pos += token.length;
+        wordSpans.push(span);
+      });
+
+      paragraphLabel.textContent = `Sentence ${currentIndex + 1} of ${sentences.length}`;
+      progressEl.textContent = `${currentIndex + 1}/${sentences.length}`;
+      statusEl.textContent = 'Paused';
+      clearHighlight();
+    }
+
+    function clearHighlight() {
+      wordSpans.forEach(span => span.classList.remove('active'));
+    }
+
+    function highlightCharPosition(charIndex) {
+      let highlightIndex = offsets.findIndex(off => charIndex >= off.start && charIndex < off.end);
+      if (highlightIndex === -1 && charIndex >= 0 && offsets.length > 0 && charIndex >= offsets[offsets.length-1].end) {
+        highlightIndex = offsets.length - 1;
+      }
+      wordSpans.forEach((span, idx) => {
+        span.classList.toggle('active', idx === highlightIndex);
+      });
+    }
+
+    function speakSentence() {
+      stop();
+      const text = sentences[currentIndex];
+      utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = parseFloat(rateInput.value);
+      utterance.pitch = parseFloat(pitchInput.value);
+      const voiceIndex = parseInt(voiceSelect.value, 10);
+      if (!isNaN(voiceIndex) && voices[voiceIndex]) {
+        utterance.voice = voices[voiceIndex];
+      }
+
+      utterance.onstart = () => {
+        isPlaying = true;
+        playPauseBtn.textContent = 'Pause';
+        statusEl.textContent = 'Playing';
+        if (nextSentenceTimeout) {
+          clearTimeout(nextSentenceTimeout);
+          nextSentenceTimeout = null;
+        }
+      };
+      utterance.onpause = () => { isPlaying = false; playPauseBtn.textContent = 'Play'; statusEl.textContent = 'Paused'; };
+      utterance.onresume = () => { isPlaying = true; playPauseBtn.textContent = 'Pause'; statusEl.textContent = 'Playing'; };
+      utterance.onend = () => {
+        isPlaying = false;
+        playPauseBtn.textContent = 'Play';
+        clearHighlight();
+
+        if (currentIndex < sentences.length - 1) {
+          statusEl.textContent = 'Completed. Advancing to next sentence in 0.5s...';
+          nextSentenceTimeout = setTimeout(() => {
+            currentIndex += 1;
+            renderSentence();
+            speakSentence();
+          }, 500);
+        } else {
+          statusEl.textContent = 'Finished all sentences.';
+        }
+      };
+      utterance.onerror = (e) => { isPlaying = false; playPauseBtn.textContent = 'Play'; statusEl.textContent = 'Error: ' + e.error; };
+
+      utterance.onboundary = (event) => {
+        if (event.name === 'word' || event.name === 'sentence' || event.name === '') {
+          highlightCharPosition(event.charIndex);
+        }
+      };
+      window.speechSynthesis.speak(utterance);
+    }
+
+    function stop() {
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+        window.speechSynthesis.cancel();
+      }
+      if (nextSentenceTimeout) {
+        clearTimeout(nextSentenceTimeout);
+        nextSentenceTimeout = null;
+      }
+      isPlaying = false;
+      playPauseBtn.textContent = 'Play';
+    }
+
+    function playPause() {
+      if (!utterance || (!window.speechSynthesis.speaking && !window.speechSynthesis.pending)) {
+        speakSentence();
+        return;
+      }
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      } else {
+        window.speechSynthesis.pause();
+      }
+    }
+
+    function prevSentence() {
+      if (currentIndex > 0) {
+        currentIndex -= 1;
+        renderSentence();
+        speakSentence();
+      }
+    }
+
+    function nextSentence() {
+      if (currentIndex < sentences.length - 1) {
+        currentIndex += 1;
+        renderSentence();
+        speakSentence();
+      }
+    }
+
+    function restartSentence() {
+      renderSentence();
+      speakSentence();
+    }
+
+    prevBtn.addEventListener('click', prevSentence);
+    nextBtn.addEventListener('click', nextSentence);
+    playPauseBtn.addEventListener('click', playPause);
+    restartBtn.addEventListener('click', restartSentence);
+    rateInput.addEventListener('input', () => { updateRatePitchLabels(); if (isPlaying) speakSentence(); });
+    pitchInput.addEventListener('input', () => { updateRatePitchLabels(); if (isPlaying) speakSentence(); });
+
+    fileInput.addEventListener('change', async (event) => {
+      if (!event.target.files || event.target.files.length === 0) return;
+      const file = event.target.files[0];
+      const text = await file.text();
+      extractedText = text;
+      extractedFilename = file.name.replace(/\.txt$/i, '') + '_from_pdf.txt';
+      saveTextBtn.disabled = false;
+      paragraphLabel.textContent = `Loaded local file: ${file.name}`;
+      statusEl.textContent = 'Ready';
+      parseText(text);
+    });
+
+    pdfInput.addEventListener('change', (event) => {
+      if (event.target.files && event.target.files.length > 0) {
+        convertPdfBtn.disabled = false;
+      } else {
+        convertPdfBtn.disabled = true;
+      }
+    });
+
+    convertPdfBtn.addEventListener('click', async () => {
+      if (!pdfInput.files || pdfInput.files.length === 0) return;
+      const file = pdfInput.files[0];
+      paragraphLabel.textContent = `Converting PDF: ${file.name}`;
+      const buffer = await file.arrayBuffer();
+      try {
+        await convertPdfBuffer(buffer, file.name);
+        paragraphLabel.textContent = `PDF loaded: ${file.name}`;
+      } catch (err) {
+        pdfProgress.style.display = 'none';
+        statusEl.textContent = 'PDF conversion failed: ' + err;
+        paragraphLabel.textContent = 'PDF conversion failed';
+      }
+    });
+
+    saveTextBtn.addEventListener('click', () => {
+      if (!extractedText || !extractedFilename) {
+        statusEl.textContent = 'No converted text available to save.';
+        return;
+      }
+      const blob = new Blob([extractedText], {type: 'text/plain;charset=utf-8'});
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = extractedFilename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      statusEl.textContent = `Saved converted text as ${extractedFilename}`;
+    });
+
+    fullscreenToggle.addEventListener('click', () => {
+      document.body.classList.toggle('fullscreen');
+      const isFullscreen = document.body.classList.contains('fullscreen');
+      fullscreenToggle.textContent = isFullscreen ? 'Exit Fullscreen' : 'Fullscreen';
+    });
+
+    mainContainer.addEventListener('click', (event) => {
+      if (document.body.classList.contains('fullscreen') && event.target !== fullscreenToggle) {
+        document.body.classList.remove('fullscreen');
+        fullscreenToggle.textContent = 'Fullscreen';
+      }
+    });
+
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        if (document.body.classList.contains('fullscreen')) {
+          document.body.classList.remove('fullscreen');
+          fullscreenToggle.textContent = 'Fullscreen';
+          return;
+        }
+      }
+      if (event.target.tagName === 'INPUT' || event.target.tagName === 'SELECT' || event.target.isContentEditable) return;
+      if (event.code === 'Space') {
+        event.preventDefault();
+        playPause();
+      }
+      if (event.code === 'ArrowLeft') {
+        event.preventDefault();
+        prevSentence();
+      }
+      if (event.code === 'ArrowRight') {
+        event.preventDefault();
+        nextSentence();
+      }
+      if (event.code === 'KeyR') {
+        restartSentence();
+      }
+    });
+
+    window.addEventListener('beforeunload', () => stop());
+
+    // Always allow selecting a PDF file object; conversion may fail if PDF.js is unavailable.
+    pdfInput.disabled = false;
+    loadPdfjsLib().then((pdfjsLib) => {
+      if (!pdfjsLib || typeof pdfjsLib.getDocument !== 'function') {
+        statusEl.textContent = 'Warning: pdfjsLib is not loaded; PDF conversion is disabled. You can still select a PDF file, but conversion will not run.';
+        convertPdfBtn.disabled = true;
+      } else {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.12.313/pdf.worker.min.js';
+        convertPdfBtn.disabled = true;
+        statusEl.textContent = 'PDF.js loaded; select PDF file to convert.';
+      }
+    });
+
+    updateRatePitchLabels();
+    loadFile();
+  </script>
+</body>
+</html>
