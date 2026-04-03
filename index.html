@@ -74,6 +74,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.12.313/pdf.min.js"></script>
   <script>
     async function loadPdfjsLib() {
+      console.log('loadPdfjsLib called');
       // Prefer existing global object from script tag.
       let pdfjs = window.pdfjsLib || window['pdfjs-dist/build/pdf'] || window['pdfjs-dist/build/pdf.min'] || null;
       if (pdfjs && typeof pdfjs.getDocument === 'function') {
@@ -84,6 +85,7 @@
 
       // If script tag hasn't loaded yet, wait for onload event or retry.
       if (!window.__pdfjsLoadPromise) {
+        console.log('Creating new PDF.js load promise');
         window.__pdfjsLoadPromise = new Promise((resolve) => {
           if (window.pdfjsLib && typeof window.pdfjsLib.getDocument === 'function') {
             console.log('PDF.js library found in promise check');
@@ -91,8 +93,11 @@
             return;
           }
           const script = document.querySelector('script[src*="pdf.min.js"]');
+          console.log('Script tag found:', !!script, 'already has listener:', script?.hasAttribute('data-listener'));
+          
           if (script && !script.hasAttribute('data-listener')) {
             script.setAttribute('data-listener', 'true');
+            console.log('Adding load/error listeners to script tag');
             script.addEventListener('load', () => {
               console.log('PDF.js script load event fired');
               if (window.pdfjsLib && typeof window.pdfjsLib.getDocument === 'function') {
@@ -107,13 +112,22 @@
               resolve(null);
             });
           } else {
-            console.warn('PDF.js script tag not found in DOM');
+            console.warn('PDF.js script tag not found or already has listener, will try dynamic import');
             resolve(null);
           }
         });
+      } else {
+        console.log('Using existing PDF.js load promise');
       }
 
-      pdfjs = await window.__pdfjsLoadPromise;
+      pdfjs = await Promise.race([
+        window.__pdfjsLoadPromise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('PDF.js script load timeout after 10s')), 10000))
+      ]).catch(err => {
+        console.warn('Script load promise timeout/error:', err.message);
+        return null;
+      });
+
       if (pdfjs && typeof pdfjs.getDocument === 'function') {
         console.log('PDF.js library loaded from promise');
         window.pdfjsLib = pdfjs;
@@ -130,10 +144,10 @@
           window.pdfjsLib = maybe;
           return maybe;
         } else {
-          console.warn('Dynamic import succeeded but getDocument not available');
+          console.warn('Dynamic import succeeded but getDocument not available, maybe:', typeof maybe);
         }
       } catch (e) {
-        console.error('dynamic pdfjs import failed:', e);
+        console.error('dynamic pdfjs import failed:', e.message);
       }
 
       console.error('Failed to load PDF.js library');
@@ -245,6 +259,10 @@
 
     async function convertPdfBuffer(buffer, sourceFilename) {
       const pdfjsLib = await loadPdfjsLib();
+      console.log('After loadPdfjsLib, pdfjsLib:', {
+        hasGetDocument: pdfjsLib && typeof pdfjsLib.getDocument === 'function',
+        pdfjsLibType: typeof pdfjsLib
+      });
       if (!pdfjsLib || typeof pdfjsLib.getDocument !== 'function') {
         console.error('pdfjsLib failed to load. pdfjsLib:', pdfjsLib);
         throw new Error('PDF.js library failed to load. Try refreshing the page.');
@@ -253,46 +271,54 @@
       const conversionTimeoutMs = 120000; // 2 minutes overall fallback
       statusEl.textContent = 'Converting PDF to text...';
       console.log('Starting PDF conversion, buffer size:', buffer.byteLength);
-      const loadingTask = pdfjsLib.getDocument({data: buffer});
+      
+      try {
+        const loadingTask = pdfjsLib.getDocument({data: buffer});
+        console.log('getDocument called, loadingTask:', typeof loadingTask);
 
-      conversionTimer = setTimeout(() => {
-        statusEl.textContent = 'Conversion taking too long, aborting.';
-        console.warn('Conversion timeout triggered');
-        if (loadingTask && typeof loadingTask.destroy === 'function') {
-          loadingTask.destroy();
+        conversionTimer = setTimeout(() => {
+          statusEl.textContent = 'Conversion taking too long, aborting.';
+          console.warn('Conversion timeout triggered');
+          if (loadingTask && typeof loadingTask.destroy === 'function') {
+            loadingTask.destroy();
+          }
+          throw new Error('Conversion timed out after 2 minutes');
+        }, conversionTimeoutMs);
+
+        const pdf = await promiseWithTimeout(loadingTask.promise, 30000, 'PDF load timed out');
+        console.log('PDF loaded successfully, pages:', pdf.numPages);
+        pdfProgress.max = pdf.numPages;
+        pdfProgress.value = 0;
+        pdfProgress.style.display = 'block';
+        let fullText = '';
+        for (let i = 1; i <= pdf.numPages; i++) {
+          statusEl.textContent = `Retrieving page ${i} of ${pdf.numPages}...`;
+          const page = await promiseWithTimeout(pdf.getPage(i), 30000, `Page ${i} load timed out`);
+          const content = await promiseWithTimeout(page.getTextContent(), 30000, `Page ${i} text extraction timed out`);
+          let text = content.items.map(item => item.str).join(' ');
+          text = normalizeText(text);
+          fullText += text.trim() + '\n\n';
+          pdfProgress.value = i;
+          statusEl.textContent = `Converting PDF: page ${i} of ${pdf.numPages}`;
+          console.log(`Page ${i} converted, text length:`, text.length);
         }
-        throw new Error('Conversion timed out after 2 minutes');
-      }, conversionTimeoutMs);
 
-      const pdf = await promiseWithTimeout(loadingTask.promise, 30000, 'PDF load timed out');
-      console.log('PDF loaded successfully, pages:', pdf.numPages);
-      pdfProgress.max = pdf.numPages;
-      pdfProgress.value = 0;
-      pdfProgress.style.display = 'block';
-      let fullText = '';
-      for (let i = 1; i <= pdf.numPages; i++) {
-        statusEl.textContent = `Retrieving page ${i} of ${pdf.numPages}...`;
-        const page = await promiseWithTimeout(pdf.getPage(i), 30000, `Page ${i} load timed out`);
-        const content = await promiseWithTimeout(page.getTextContent(), 30000, `Page ${i} text extraction timed out`);
-        let text = content.items.map(item => item.str).join(' ');
-        text = normalizeText(text);
-        fullText += text.trim() + '\n\n';
-        pdfProgress.value = i;
-        statusEl.textContent = `Converting PDF: page ${i} of ${pdf.numPages}`;
-        console.log(`Page ${i} converted, text length:`, text.length);
+        fullText = normalizeText(fullText);
+        clearTimeout(conversionTimer);
+        parseText(fullText);
+        extractedText = fullText;
+        if (sourceFilename) {
+          extractedFilename = sourceFilename.replace(/\.pdf$/i, '.txt');
+        }
+        pdfProgress.style.display = 'none';
+        statusEl.textContent = `PDF converted: ${pdf.numPages} pages, ${sentences.length} sentences.`;
+        console.log('PDF conversion complete. Sentences:', sentences.length);
+        saveTextBtn.disabled = false;
+      } catch (err) {
+        clearTimeout(conversionTimer);
+        console.error('convertPdfBuffer error:', err);
+        throw err;
       }
-
-      fullText = normalizeText(fullText);
-      clearTimeout(conversionTimer);
-      parseText(fullText);
-      extractedText = fullText;
-      if (sourceFilename) {
-        extractedFilename = sourceFilename.replace(/\.pdf$/i, '.txt');
-      }
-      pdfProgress.style.display = 'none';
-      statusEl.textContent = `PDF converted: ${pdf.numPages} pages, ${sentences.length} sentences.`;
-      console.log('PDF conversion complete. Sentences:', sentences.length);
-      saveTextBtn.disabled = false;
     }
 
     function setControlsState(enabled) {
