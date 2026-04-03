@@ -297,11 +297,17 @@
         // Process lines within this column
         let columnText = '';
         let previousY = null;
-        const paragraphGap = 15; // pixels threshold for paragraph break
+        let previousFont = null;
+        const paragraphGap = 25; // pixels threshold for paragraph break (increased from 15)
+        const lineGap = 8; // pixels threshold for line break (smaller than paragraph)
 
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
           const lineY = line[0].transform[5] || 0;
+
+          // Check for font change (indicates potential section break)
+          const currentFont = line[0].fontName || '';
+          const fontChanged = previousFont !== null && previousFont !== currentFont && previousFont !== '';
 
           // Sort items within line by x-coordinate (left to right)
           line.sort((a, b) => (a.transform[4] || 0) - (b.transform[4] || 0));
@@ -311,24 +317,31 @@
 
           if (!lineText) continue;
 
-          // Check if this is a new paragraph (significant vertical gap)
-          const isNewParagraph = previousY !== null && (previousY - lineY) > paragraphGap;
+          // Check vertical gap to determine if this is a new paragraph or just a line break
+          const verticalGap = previousY !== null ? (previousY - lineY) : 0;
+          const isNewParagraph = verticalGap > paragraphGap;
 
-          if (isNewParagraph && columnText) {
-            // Add full stop before new paragraph if previous text doesn't end with punctuation
+          // Add full stop only for paragraph breaks OR font changes (not regular line breaks)
+          const needsFullStop = (isNewParagraph || fontChanged) && columnText;
+
+          if (needsFullStop) {
+            // Only add full stop if previous text doesn't end with punctuation
             const lastChar = columnText.trim().slice(-1);
-            if (!['.', '!', '?', ':'].includes(lastChar)) {
+            if (!['.', '!', '?', ':', ';'].includes(lastChar)) {
               columnText = columnText.trim() + '. ';
+            } else {
+              columnText += ' '; // Just add space if already punctuated
             }
+          } else if (columnText) {
+            // For regular line breaks within paragraphs, just add space (no full stop)
+            columnText += ' ';
           }
 
           // Add the line text
-          if (columnText && !isNewParagraph) {
-            columnText += ' '; // Space between lines on same paragraph
-          }
           columnText += lineText;
 
           previousY = lineY;
+          previousFont = currentFont;
         }
 
         // Add column separator if not the first column
