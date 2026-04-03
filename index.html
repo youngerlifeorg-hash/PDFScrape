@@ -394,16 +394,10 @@
         const fullText = item.str.trim();
         if (!fullText) continue;
 
-        // Extract text up to first colon
-        const colonIndex = fullText.indexOf(':');
-        if (colonIndex > 0) {
-          blueTextSegments.push(fullText.substring(0, colonIndex).trim());
-        }
-
-        // Extract sections between semicolons and colons
-        const semiColonPattern = /;([^;]+?):/g;
+        // Extract sections between semicolons and colons (but not from colon to semicolon)
+        const semiColonToColonPattern = /;([^;]+?):/g;
         let match;
-        while ((match = semiColonPattern.exec(fullText)) !== null) {
+        while ((match = semiColonToColonPattern.exec(fullText)) !== null) {
           const segment = match[1].trim();
           if (segment) {
             blueTextSegments.push(segment);
@@ -414,7 +408,7 @@
       // Remove duplicates and empty strings
       const uniqueSegments = [...new Set(blueTextSegments)].filter(text => text);
 
-      console.log('Parsed blue text segments:', uniqueSegments);
+      console.log('Parsed blue text segments (semicolon to colon only):', uniqueSegments);
 
       let result = regularText;
       let segmentIndex = 0;
