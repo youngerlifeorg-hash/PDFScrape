@@ -92,6 +92,14 @@
             resolve(window.pdfjsLib);
             return;
           }
+          
+          // Check if we're running from file:// protocol - script tags won't load properly
+          if (location.protocol === 'file:') {
+            console.log('Running in file:// protocol, skipping script tag loading');
+            resolve(null);
+            return;
+          }
+          
           const script = document.querySelector('script[src*="pdf.min.js"]');
           console.log('Script tag found:', !!script, 'already has listener:', script?.hasAttribute('data-listener'));
           
@@ -122,7 +130,7 @@
 
       pdfjs = await Promise.race([
         window.__pdfjsLoadPromise,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('PDF.js script load timeout after 10s')), 10000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('PDF.js script load timeout after 15s')), 15000))
       ]).catch(err => {
         console.warn('Script load promise timeout/error:', err.message);
         return null;
@@ -134,23 +142,43 @@
         return pdfjs;
       }
 
-      // Fallback dynamic import from jsDelivr if global object is not present.
+      // Fallback 1: Try jsDelivr with correct path (/dist/ not /build/)
       try {
-        console.log('Attempting dynamic import of PDF.js from CDN');
-        const mod = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@3.12.313/build/pdf.min.js');
+        console.log('Attempting dynamic import from jsDelivr (dist)');
+        const mod = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@3.12.313/dist/pdf.min.js');
         const maybe = mod.default || mod;
         if (maybe && typeof maybe.getDocument === 'function') {
-          console.log('PDF.js library loaded from dynamic import');
+          console.log('PDF.js library loaded from jsDelivr dynamic import');
           window.pdfjsLib = maybe;
           return maybe;
         } else {
-          console.warn('Dynamic import succeeded but getDocument not available, maybe:', typeof maybe);
+          console.warn('jsDelivr import succeeded but getDocument not available');
         }
       } catch (e) {
-        console.error('dynamic pdfjs import failed:', e.message);
+        console.warn('jsDelivr dynamic import failed:', e.message);
       }
 
-      console.error('Failed to load PDF.js library');
+      // Fallback 2: Try loading via global fetch and eval (last resort for local file:// protocol)
+      try {
+        console.log('Attempting to load PDF.js via fetch + eval (for file:// protocol)');
+        const response = await fetch('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.12.313/pdf.min.js');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const script = await response.text();
+        // Create a blob URL to load the script dynamically
+        const blob = new Blob([script], { type: 'application/javascript' });
+        const blobUrl = URL.createObjectURL(blob);
+        const mod = await import(blobUrl);
+        const maybe = mod.default || mod;
+        if (maybe && typeof maybe.getDocument === 'function') {
+          console.log('PDF.js library loaded via fetch + blob');
+          window.pdfjsLib = maybe;
+          return maybe;
+        }
+      } catch (e) {
+        console.warn('Fetch + blob loading failed:', e.message);
+      }
+
+      console.error('Failed to load PDF.js library from all sources');
       return null;
     }
 
