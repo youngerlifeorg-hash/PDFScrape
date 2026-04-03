@@ -273,6 +273,34 @@
       const items = textContent.items;
       if (items.length === 0) return '';
 
+      // Separate blue text from regular text
+      const blueTextItems = [];
+      const regularTextItems = [];
+
+      for (const item of items) {
+        // Check if text is blue (PDF.js color format: [r, g, b] where each is 0-1)
+        const isBlue = item.color && Array.isArray(item.color) &&
+                      item.color[0] === 0 && item.color[1] === 0 && item.color[2] > 0.5; // Blue has high blue component
+
+        if (isBlue && item.str.trim()) {
+          blueTextItems.push(item);
+        } else if (item.str.trim()) {
+          regularTextItems.push(item);
+        }
+      }
+
+      console.log(`Found ${blueTextItems.length} blue text items and ${regularTextItems.length} regular text items`);
+
+      // Process regular text normally
+      const regularText = processRegularText(regularTextItems);
+
+      // Insert blue text at specific positions
+      return insertBlueText(regularText, blueTextItems);
+    }
+
+    function processRegularText(items) {
+      if (items.length === 0) return '';
+
       // First, detect columns by analyzing x-coordinates
       const xPositions = items.map(item => item.transform[4] || 0).sort((a, b) => a - b);
 
@@ -352,6 +380,46 @@
       }
 
       return result.trim();
+    }
+
+    function insertBlueText(regularText, blueTextItems) {
+      if (blueTextItems.length === 0) return regularText;
+
+      // Sort blue text items by their vertical position (top to bottom)
+      blueTextItems.sort((a, b) => (b.transform[5] || 0) - (a.transform[5] || 0));
+
+      // Extract blue text content
+      const blueTexts = blueTextItems.map(item => item.str.trim()).filter(text => text);
+
+      console.log('Blue texts to insert:', blueTexts);
+
+      let result = regularText;
+      let blueIndex = 0;
+
+      // Pattern 1: Insert after newlines followed by colons
+      result = result.replace(/\n\s*:/g, (match) => {
+        if (blueIndex < blueTexts.length) {
+          const blueText = blueTexts[blueIndex++];
+          return '\n' + blueText + ':';
+        }
+        return match;
+      });
+
+      // Pattern 2: Insert between semicolons and colons
+      result = result.replace(/;\s*:/g, (match) => {
+        if (blueIndex < blueTexts.length) {
+          const blueText = blueTexts[blueIndex++];
+          return '; ' + blueText + ':';
+        }
+        return match;
+      });
+
+      // If there are remaining blue texts, append them at the end
+      while (blueIndex < blueTexts.length) {
+        result += '\n' + blueTexts[blueIndex++];
+      }
+
+      return result;
     }
 
     function detectColumns(items) {
