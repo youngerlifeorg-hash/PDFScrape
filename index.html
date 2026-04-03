@@ -394,13 +394,17 @@
         const fullText = item.str.trim();
         if (!fullText) continue;
 
-        // Extract sections between semicolons and colons (but not from colon to semicolon)
+        // Extract sections between semicolons and colons, then filter to books and chapters only
         const semiColonToColonPattern = /;([^;]+?):/g;
         let match;
         while ((match = semiColonToColonPattern.exec(fullText)) !== null) {
-          const segment = match[1].trim();
+          let segment = match[1].trim();
           if (segment) {
-            blueTextSegments.push(segment);
+            // Remove verse numbers (anything after the last space followed by digits)
+            // This keeps "Book Chapter" but removes ":verse" or "chapter:verse"
+            segment = segment.replace(/:\d+.*$/, ''); // Remove :digits and anything after
+            segment = segment.replace(/\s+\d+.*$/, ''); // Remove space+digits and anything after (for cases without colon)
+            blueTextSegments.push(segment.trim());
           }
         }
       }
@@ -408,7 +412,7 @@
       // Remove duplicates and empty strings
       const uniqueSegments = [...new Set(blueTextSegments)].filter(text => text);
 
-      console.log('Parsed blue text segments (semicolon to colon only):', uniqueSegments);
+      console.log('Parsed blue text segments (books and chapters only):', uniqueSegments);
 
       let result = regularText;
       let segmentIndex = 0;
