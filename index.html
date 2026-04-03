@@ -269,20 +269,85 @@
       ]);
     }
 
-    function normalizeText(text) {
-      // Normalize Unicode combining characters using NFC
-      text = text.normalize('NFC');
-      // Map common misdecoded characters from PDF fonts
-      const charMap = {
-        'ţ': 't', 'ã': 'a', 'š': 's', 'ž': 'z', 'č': 'c',
-        'î': 'i', 'ø': 'o', 'ñ': 'n', 'ü': 'u', 'ö': 'o',
-        'ç': 'c', 'ù': 'u', 'è': 'e', 'é': 'e', 'ê': 'e',
-        'á': 'a', 'í': 'i', 'ó': 'o', 'ú': 'u', 'â': 'a',
-      };
-      for (const [old, replacement] of Object.entries(charMap)) {
-        text = text.split(old).join(replacement);
+    function processTextContent(textContent) {
+      const items = textContent.items;
+      if (items.length === 0) return '';
+
+      // Sort items by vertical position (y-coordinate, descending since PDF coords start from bottom)
+      const sortedItems = items.sort((a, b) => {
+        const yA = a.transform[5] || 0;
+        const yB = b.transform[5] || 0;
+        return yB - yA;
+      });
+
+      // Group items by line (similar y-coordinates)
+      const lines = [];
+      let currentLine = [];
+      let currentY = null;
+      const lineTolerance = 5; // pixels tolerance for same line
+
+      for (const item of sortedItems) {
+        const y = item.transform[5] || 0;
+        const text = item.str.trim();
+
+        if (!text) continue; // Skip empty items
+
+        if (currentY === null || Math.abs(y - currentY) > lineTolerance) {
+          // New line
+          if (currentLine.length > 0) {
+            lines.push(currentLine);
+          }
+          currentLine = [item];
+          currentY = y;
+        } else {
+          // Same line
+          currentLine.push(item);
+        }
       }
-      return text;
+
+      // Add the last line
+      if (currentLine.length > 0) {
+        lines.push(currentLine);
+      }
+
+      // Process lines into text with proper punctuation
+      let result = '';
+      let previousY = null;
+      const paragraphGap = 15; // pixels threshold for paragraph break
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const lineY = line[0].transform[5] || 0;
+
+        // Sort items within line by x-coordinate (left to right)
+        line.sort((a, b) => (a.transform[4] || 0) - (b.transform[4] || 0));
+
+        // Join text within the line
+        const lineText = line.map(item => item.str).join('').trim();
+
+        if (!lineText) continue;
+
+        // Check if this is a new paragraph (significant vertical gap)
+        const isNewParagraph = previousY !== null && (previousY - lineY) > paragraphGap;
+
+        if (isNewParagraph && result) {
+          // Add full stop before new paragraph if previous text doesn't end with punctuation
+          const lastChar = result.trim().slice(-1);
+          if (!['.', '!', '?', ':'].includes(lastChar)) {
+            result = result.trim() + '. ';
+          }
+        }
+
+        // Add the line text
+        if (result && !isNewParagraph) {
+          result += ' '; // Space between lines on same paragraph
+        }
+        result += lineText;
+
+        previousY = lineY;
+      }
+
+      return result.trim();
     }
 
     async function convertPdfBuffer(buffer, sourceFilename) {
@@ -332,8 +397,11 @@
           statusEl.textContent = `Retrieving page ${i} of ${pdf.numPages}...`;
           const page = await promiseWithTimeout(pdf.getPage(i), 30000, `Page ${i} load timed out`);
           const content = await promiseWithTimeout(page.getTextContent(), 30000, `Page ${i} text extraction timed out`);
-          let text = content.items.map(item => item.str).join(' ');
+          
+          // Use intelligent text processing that adds full stops for line/paragraph breaks
+          let text = processTextContent(content);
           text = normalizeText(text);
+          
           fullText += text.trim() + '\n\n';
           pdfProgress.value = i;
           statusEl.textContent = `Converting PDF: page ${i} of ${pdf.numPages}`;
