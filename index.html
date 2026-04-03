@@ -413,25 +413,27 @@
       let result = regularText;
       let segmentIndex = 0;
 
-      // Pattern 1: Insert after newlines followed by colons
-      result = result.replace(/\n\s*:/g, (match) => {
-        if (segmentIndex < uniqueSegments.length) {
-          const segment = uniqueSegments[segmentIndex++];
-          return '\n' + segment + ':';
-        }
-        return match;
-      });
-
-      // Pattern 2: Insert between semicolons and colons
-      result = result.replace(/;\s*:/g, (match) => {
+      // Replace content between semicolons and colons with blue text segments
+      result = result.replace(/;[^;]+?:/g, (match) => {
         if (segmentIndex < uniqueSegments.length) {
           const segment = uniqueSegments[segmentIndex++];
           return '; ' + segment + ':';
         }
-        return match;
+        return match; // Keep original if no more segments
       });
 
-      // If there are remaining segments, append them at the end
+      // If there are remaining segments and we have newlines followed by colons, replace those too
+      if (segmentIndex < uniqueSegments.length) {
+        result = result.replace(/\n\s*:[^:]*:/g, (match) => {
+          if (segmentIndex < uniqueSegments.length) {
+            const segment = uniqueSegments[segmentIndex++];
+            return '\n' + segment + ':';
+          }
+          return match;
+        });
+      }
+
+      // If there are still remaining segments, append them at the end
       while (segmentIndex < uniqueSegments.length) {
         result += '\n' + uniqueSegments[segmentIndex++];
       }
