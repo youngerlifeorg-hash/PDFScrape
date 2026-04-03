@@ -388,35 +388,58 @@
       // Sort blue text items by their vertical position (top to bottom)
       blueTextItems.sort((a, b) => (b.transform[5] || 0) - (a.transform[5] || 0));
 
-      // Extract blue text content
-      const blueTexts = blueTextItems.map(item => item.str.trim()).filter(text => text);
+      // Extract and parse blue text content selectively
+      const blueTextSegments = [];
+      for (const item of blueTextItems) {
+        const fullText = item.str.trim();
+        if (!fullText) continue;
 
-      console.log('Blue texts to insert:', blueTexts);
+        // Extract text up to first colon
+        const colonIndex = fullText.indexOf(':');
+        if (colonIndex > 0) {
+          blueTextSegments.push(fullText.substring(0, colonIndex).trim());
+        }
+
+        // Extract sections between semicolons and colons
+        const semiColonPattern = /;([^;]+?):/g;
+        let match;
+        while ((match = semiColonPattern.exec(fullText)) !== null) {
+          const segment = match[1].trim();
+          if (segment) {
+            blueTextSegments.push(segment);
+          }
+        }
+      }
+
+      // Remove duplicates and empty strings
+      const uniqueSegments = [...new Set(blueTextSegments)].filter(text => text);
+
+      console.log('Parsed blue text segments:', uniqueSegments);
 
       let result = regularText;
-      let blueIndex = 0;
+      let segmentIndex = 0;
 
       // Pattern 1: Insert after newlines followed by colons
       result = result.replace(/\n\s*:/g, (match) => {
-        if (blueIndex < blueTexts.length) {
-          const blueText = blueTexts[blueIndex++];
-          return '\n' + blueText + ':';
+        if (segmentIndex < uniqueSegments.length) {
+          const segment = uniqueSegments[segmentIndex++];
+          return '\n' + segment + ':';
         }
         return match;
       });
 
       // Pattern 2: Insert between semicolons and colons
       result = result.replace(/;\s*:/g, (match) => {
-        if (blueIndex < blueTexts.length) {
-          const blueText = blueTexts[blueIndex++];
-          return '; ' + blueText + ':';
+        if (segmentIndex < uniqueSegments.length) {
+          const segment = uniqueSegments[segmentIndex++];
+          return '; ' + segment + ':';
         }
         return match;
       });
 
-      // If there are remaining blue texts, append them at the end
-      while (blueIndex < blueTexts.length) {
-        result += '\n' + blueTexts[blueIndex++];
+      // If there are remaining segments, append them at the end
+      while (segmentIndex < uniqueSegments.length) {
+        result += '\n' + uniqueSegments[segmentIndex++];
       }
 
       return result;
