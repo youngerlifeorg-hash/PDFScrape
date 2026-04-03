@@ -77,6 +77,7 @@
       // Prefer existing global object from script tag.
       let pdfjs = window.pdfjsLib || window['pdfjs-dist/build/pdf'] || window['pdfjs-dist/build/pdf.min'] || null;
       if (pdfjs && typeof pdfjs.getDocument === 'function') {
+        console.log('PDF.js library already loaded from global object');
         window.pdfjsLib = pdfjs;
         return pdfjs;
       }
@@ -85,6 +86,7 @@
       if (!window.__pdfjsLoadPromise) {
         window.__pdfjsLoadPromise = new Promise((resolve) => {
           if (window.pdfjsLib && typeof window.pdfjsLib.getDocument === 'function') {
+            console.log('PDF.js library found in promise check');
             resolve(window.pdfjsLib);
             return;
           }
@@ -92,14 +94,20 @@
           if (script && !script.hasAttribute('data-listener')) {
             script.setAttribute('data-listener', 'true');
             script.addEventListener('load', () => {
+              console.log('PDF.js script load event fired');
               if (window.pdfjsLib && typeof window.pdfjsLib.getDocument === 'function') {
                 resolve(window.pdfjsLib);
               } else {
+                console.warn('PDF.js script loaded but window.pdfjsLib not available');
                 resolve(null);
               }
             });
-            script.addEventListener('error', () => resolve(null));
+            script.addEventListener('error', () => {
+              console.error('PDF.js script load error');
+              resolve(null);
+            });
           } else {
+            console.warn('PDF.js script tag not found in DOM');
             resolve(null);
           }
         });
@@ -107,22 +115,28 @@
 
       pdfjs = await window.__pdfjsLoadPromise;
       if (pdfjs && typeof pdfjs.getDocument === 'function') {
+        console.log('PDF.js library loaded from promise');
         window.pdfjsLib = pdfjs;
         return pdfjs;
       }
 
       // Fallback dynamic import from jsDelivr if global object is not present.
       try {
+        console.log('Attempting dynamic import of PDF.js from CDN');
         const mod = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@3.12.313/build/pdf.min.js');
         const maybe = mod.default || mod;
         if (maybe && typeof maybe.getDocument === 'function') {
+          console.log('PDF.js library loaded from dynamic import');
           window.pdfjsLib = maybe;
           return maybe;
+        } else {
+          console.warn('Dynamic import succeeded but getDocument not available');
         }
       } catch (e) {
-        console.warn('dynamic pdfjs import failed', e);
+        console.error('dynamic pdfjs import failed:', e);
       }
 
+      console.error('Failed to load PDF.js library');
       return null;
     }
 
@@ -232,15 +246,18 @@
     async function convertPdfBuffer(buffer, sourceFilename) {
       const pdfjsLib = await loadPdfjsLib();
       if (!pdfjsLib || typeof pdfjsLib.getDocument !== 'function') {
-        throw new Error('pdfjsLib.getDocument is not available; cannot convert PDF.');
+        console.error('pdfjsLib failed to load. pdfjsLib:', pdfjsLib);
+        throw new Error('PDF.js library failed to load. Try refreshing the page.');
       }
       let conversionTimer = null;
       const conversionTimeoutMs = 120000; // 2 minutes overall fallback
       statusEl.textContent = 'Converting PDF to text...';
+      console.log('Starting PDF conversion, buffer size:', buffer.byteLength);
       const loadingTask = pdfjsLib.getDocument({data: buffer});
 
       conversionTimer = setTimeout(() => {
         statusEl.textContent = 'Conversion taking too long, aborting.';
+        console.warn('Conversion timeout triggered');
         if (loadingTask && typeof loadingTask.destroy === 'function') {
           loadingTask.destroy();
         }
@@ -248,6 +265,7 @@
       }, conversionTimeoutMs);
 
       const pdf = await promiseWithTimeout(loadingTask.promise, 30000, 'PDF load timed out');
+      console.log('PDF loaded successfully, pages:', pdf.numPages);
       pdfProgress.max = pdf.numPages;
       pdfProgress.value = 0;
       pdfProgress.style.display = 'block';
@@ -261,6 +279,7 @@
         fullText += text.trim() + '\n\n';
         pdfProgress.value = i;
         statusEl.textContent = `Converting PDF: page ${i} of ${pdf.numPages}`;
+        console.log(`Page ${i} converted, text length:`, text.length);
       }
 
       fullText = normalizeText(fullText);
@@ -272,6 +291,7 @@
       }
       pdfProgress.style.display = 'none';
       statusEl.textContent = `PDF converted: ${pdf.numPages} pages, ${sentences.length} sentences.`;
+      console.log('PDF conversion complete. Sentences:', sentences.length);
       saveTextBtn.disabled = false;
     }
 
@@ -500,13 +520,17 @@
       if (!pdfInput.files || pdfInput.files.length === 0) return;
       const file = pdfInput.files[0];
       paragraphLabel.textContent = `Converting PDF: ${file.name}`;
-      const buffer = await file.arrayBuffer();
       try {
+        console.log('PDF conversion started for:', file.name);
+        const buffer = await file.arrayBuffer();
+        console.log('PDF file loaded, buffer size:', buffer.byteLength);
         await convertPdfBuffer(buffer, file.name);
         paragraphLabel.textContent = `PDF loaded: ${file.name}`;
+        console.log('PDF conversion completed successfully');
       } catch (err) {
         pdfProgress.style.display = 'none';
-        statusEl.textContent = 'PDF conversion failed: ' + err;
+        console.error('PDF conversion error:', err);
+        statusEl.textContent = 'PDF conversion failed: ' + err.message;
         paragraphLabel.textContent = 'PDF conversion failed';
       }
     });
